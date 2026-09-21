@@ -44,6 +44,18 @@ class _DispatcherSettings:
     max_in_progress_per_profile: Optional[int]
 
 
+@dataclass(frozen=True)
+class _SupervisorTarget:
+    """Home-channel destination that centrally supervises every active card."""
+
+    platform: str
+    chat_id: str
+    user_id: Optional[str]
+    chat_type: str
+    notifier_profile: str
+    delivery_metadata: dict[str, Any]
+
+
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
     """Parse and log the dispatcher settings in their established order."""
     try:
@@ -209,6 +221,46 @@ class _KanbanDispatcher:
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
+
+    def ensure_supervisor_subscriptions(self, target: _SupervisorTarget) -> int:
+        """Subscribe the operator home channel before work can fail."""
+        from hermes_cli import kanban_db_notify as kbn
+
+        added = 0
+        for slug in self._board_slugs():
+            conn = None
+            try:
+                conn = _kbc().connect(board=slug)
+                existing = {
+                    sub["task_id"]
+                    for sub in kbn.list_notify_subs(conn)
+                    if (sub.get("platform") or "").lower() == target.platform
+                    and str(sub.get("chat_id") or "") == target.chat_id
+                }
+                tasks = self.kb.list_tasks(conn, include_archived=False)
+                for task in tasks:
+                    if task.status in {"done", "archived"} or task.id in existing:
+                        continue
+                    kbn.add_notify_sub(
+                        conn,
+                        task_id=task.id,
+                        platform=target.platform,
+                        chat_id=target.chat_id,
+                        user_id=target.user_id,
+                        chat_type=target.chat_type,
+                        notifier_profile=target.notifier_profile,
+                        delivery_mode="notify+wake",
+                        delivery_metadata=target.delivery_metadata,
+                    )
+                    existing.add(task.id)
+                    added += 1
+            except Exception:
+                logger.exception("kanban supervisor: subscription sweep failed on board %s", slug)
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+        return added
 
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?

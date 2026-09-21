@@ -27,6 +27,7 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _SupervisorTarget,
     _log_spawn_results,
     _resolve_dispatcher_settings,
 )
@@ -248,6 +249,40 @@ class GatewayKanbanWatchersMixin:
                            "on config control alone.", _lock_path)
         return _load_config, _kb, kanban_cfg
 
+    def _kanban_supervisor_target(self, kanban_cfg: dict) -> Optional[_SupervisorTarget]:
+        """Resolve the configured operator home channel for central supervision."""
+        supervisor = kanban_cfg.get("supervisor") if isinstance(kanban_cfg, dict) else None
+        if not isinstance(supervisor, dict) or not supervisor.get("enabled", False):
+            return None
+        platform_name = str(supervisor.get("platform") or "telegram").strip().lower()
+        try:
+            from gateway.config import Platform
+
+            platform = Platform(platform_name)
+            home = getattr(self, "config").get_home_channel(platform)
+        except Exception as exc:
+            logger.warning("kanban supervisor: invalid platform/home channel %r: %s", platform_name, exc)
+            return None
+        if not home or not home.chat_id:
+            logger.warning("kanban supervisor: no home channel configured for %s", platform_name)
+            return None
+        metadata = {
+            key: value
+            for key, value in {
+                "chat_type": "dm",
+                "scope_id": getattr(home, "scope_id", None),
+            }.items()
+            if value
+        }
+        return _SupervisorTarget(
+            platform=platform_name,
+            chat_id=str(home.chat_id),
+            user_id=str(home.user_id) if getattr(home, "user_id", None) else None,
+            chat_type="dm",
+            notifier_profile=str(supervisor.get("profile") or getattr(self, "_active_profile_name")()),
+            delivery_metadata=metadata,
+        )
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -274,6 +309,7 @@ class GatewayKanbanWatchersMixin:
         last_warn_at = 0
         results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
+        supervisor_target = self._kanban_supervisor_target(kanban_cfg)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
@@ -293,6 +329,11 @@ class GatewayKanbanWatchersMixin:
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
+                    if supervisor_target is not None:
+                        added = await _to_thread_process_service(
+                            dispatcher.ensure_supervisor_subscriptions, supervisor_target)
+                        if added:
+                            logger.info("kanban supervisor: attached home-channel supervision to %d task(s)", added)
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
