@@ -375,6 +375,63 @@ class GatewaySlashCommandsMixin(
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_tache_command(self, event: MessageEvent) -> str:
+        """Create one real Kanban task from an explicit French ``/tache`` request.
+
+        Ordinary conversation never reaches this handler, which keeps chat messages out of the
+        work queue. The complete request is retained in the body while the first line becomes the
+        compact card title.
+        """
+        request = (event.get_command_args() or "").strip()
+        if not request:
+            return "Usage : `/tache description du travail à réaliser`"
+
+        first_line = next((line.strip() for line in request.splitlines() if line.strip()), request)
+        title = first_line[:160]
+        source = event.source
+        active_profile = getattr(self, "_active_profile_name", lambda: "default")
+        assignee = (
+            str(getattr(source, "profile", "") or "").strip()
+            or getattr(self, "_kanban_notifier_profile", None)
+            or active_profile()
+        )
+        platform = getattr(source, "platform", None)
+        platform_name = str(getattr(platform, "value", None) or platform or "gateway")
+        profile_name = str(getattr(source, "profile", "") or assignee or "default")
+        message_id = str(event.message_id or "").strip()
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        idempotency_key = (
+            f"explicit-tache:{profile_name}:{platform_name}:{chat_id}:{message_id}"
+            if message_id else None
+        )
+
+        from hermes_cli import kanban_db as _kb
+        board = _kb.get_current_board()
+
+        def _create_task() -> str:
+            from hermes_cli import kanban_db_connect as _kbc
+
+            with _kbc.connect_closing(board=board) as conn:
+                return _kb.create_task(
+                    conn,
+                    title=title,
+                    body=request,
+                    assignee=str(assignee),
+                    created_by="explicit-/tache",
+                    idempotency_key=idempotency_key,
+                    board=board,
+                )
+
+        try:
+            task_id = await asyncio.to_thread(_create_task)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"Impossible de créer la tâche : {exc}"
+        try:
+            await self._kanban_auto_subscribe(event, task_id, board)
+        except Exception as exc:
+            logger.warning("/tache auto-subscribe failed: %s", exc)
+        return f"✅ Tâche créée : `{task_id}`\n{title}"
+
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the
         source has no platform/chat to route back to."""

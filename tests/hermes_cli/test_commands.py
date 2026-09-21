@@ -52,6 +52,13 @@ class TestCommandRegistry:
 # resolve_command tests
 # ---------------------------------------------------------------------------
 
+def test_tache_is_an_explicit_gateway_task_command():
+    tache = resolve_command("tache")
+    assert tache is not None
+    assert tache.gateway_only
+    assert tache.args_hint == "<description>"
+    assert tache.busy_policy == "dispatch"
+    assert "tache" in GATEWAY_KNOWN_COMMANDS
 
 
 # ---------------------------------------------------------------------------
