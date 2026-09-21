@@ -1366,15 +1366,66 @@ Read-only commands are safe while an agent is running.\
 """
 
 
+_SLASH_ACTIVE_GROUPS = (
+    ("🟢", "EN COURS", frozenset({"running"})),
+    ("🟡", "EN ATTENTE", frozenset({"triage", "todo", "scheduled", "ready"})),
+    ("🔴", "BLOQUÉES", frozenset({"blocked"})),
+)
+
+_SLASH_WAITING_LABELS = {
+    "triage": "À trier",
+    "todo": "À préparer",
+    "scheduled": "Planifiée",
+    "ready": "Prête",
+}
+
+
+def _render_slash_active_board() -> str:
+    """Compact, chat-friendly view used by bare ``/kanban``.
+
+    Completed and archived work is deliberately omitted: the default chat
+    surface is an operational view, while ``/kanban list`` remains the full
+    query surface.
+    """
+    with kbc.connect_closing() as conn:
+        kb.recompute_ready(conn)
+        tasks = kb.list_tasks(conn, include_archived=False)
+
+    active_statuses = frozenset().union(*(statuses for _, _, statuses in _SLASH_ACTIVE_GROUPS))
+    tasks = [task for task in tasks if task.status in active_statuses]
+    plural = len(tasks) != 1
+    lines = [f"📋 **KANBAN · {len(tasks)} tâche{'s' if plural else ''} active{'s' if plural else ''}**"]
+
+    for icon, heading, statuses in _SLASH_ACTIVE_GROUPS:
+        grouped = [task for task in tasks if task.status in statuses]
+        lines.extend(("", f"{icon} **{heading} · {len(grouped)}**"))
+        if not grouped:
+            lines.append("_Aucune tâche_" if heading != "BLOQUÉES" else "_Aucune tâche bloquée_")
+            continue
+        for task in grouped:
+            details = [f"`{task.id}`"]
+            if task.status in _SLASH_WAITING_LABELS:
+                details.append(_SLASH_WAITING_LABELS[task.status])
+            details.append(f"👤 {task.assignee or 'Non assignée'}")
+            lines.append(f"• **{task.title}**")
+            lines.append("  " + " · ".join(details))
+
+    lines.extend(("", "`/kanban help` pour les commandes"))
+    return "\n".join(lines)
+
+
 def run_slash(rest: str) -> str:
     """Execute a ``/kanban …`` string (``rest`` = everything after ``/kanban``) and return captured
     stdout/stderr. Shared by the interactive CLI and the gateway so formatting is identical."""
     import io
 
     tokens = shlex.split(rest) if rest and rest.strip() else []
-    # Bare ``/kanban`` / ``help`` / ``-h``: curated short block, not argparse's full tree (garbage
-    # in a chat bubble). ``/kanban foo -h`` still works.
-    if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
+    # Bare ``/kanban`` is the operational dashboard. Explicit help keeps the
+    # curated short block instead of argparse's full tree (garbage in a chat
+    # bubble). ``/kanban foo -h`` still works.
+    if not tokens:
+        return _render_slash_active_board()
+    if tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
     # build_parser() needs a subparsers action to attach to: build a throwaway one and drive
     # kanban_parser directly so usage/error text reads ``/kanban``.

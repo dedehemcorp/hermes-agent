@@ -241,3 +241,44 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def test_bare_kanban_shows_only_active_work_grouped_for_chat(kanban_home):
+    with kbc.connect_closing() as conn:
+        running_id = kb.create_task(conn, title="Réparer le matchmaking", assignee="sol")
+        assert kb.claim_task(conn, running_id, claimer="sol") is not None
+
+        waiting_id = kb.create_task(conn, title="Préparer la prochaine carte", assignee="terra")
+
+        blocked_id = kb.create_task(conn, title="Publier le serveur", assignee="luna")
+        assert kb.block_task(conn, blocked_id, reason="Accès manquant")
+
+        done_id = kb.create_task(conn, title="Ancienne tâche terminée", assignee="sol")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', completed_at = 1 WHERE id = ?",
+                (done_id,),
+            )
+
+    output = kc.run_slash("")
+
+    assert "📋 **KANBAN · 3 tâches actives**" in output
+    assert "🟢 **EN COURS · 1**" in output
+    assert "🟡 **EN ATTENTE · 1**" in output
+    assert "🔴 **BLOQUÉES · 1**" in output
+    assert f"`{running_id}`" in output
+    assert f"`{waiting_id}`" in output
+    assert f"`{blocked_id}`" in output
+    assert "Réparer le matchmaking" in output
+    assert "Préparer la prochaine carte" in output
+    assert "Publier le serveur" in output
+    assert "Ancienne tâche terminée" not in output
+    assert done_id not in output
+    assert "`/kanban help` pour les commandes" in output
+
+
+def test_kanban_help_remains_available_explicitly(kanban_home):
+    output = kc.run_slash("help")
+
+    assert output.startswith("**/kanban**")
+    assert "Common subcommands:" in output
+
+
