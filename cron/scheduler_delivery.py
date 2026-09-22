@@ -1349,7 +1349,17 @@ def _delivery_message_state_path() -> Path:
 
 
 def _delivery_message_key(t: _TargetDelivery) -> str:
-    return "\x1f".join((t.platform_name, str(t.chat_id), str(t.thread_id or "")))
+    """Stable replacement slot for one job on one delivery target.
+
+    The job id is load-bearing: two automations may intentionally publish to
+    the same chat/thread, and each must replace only its own previous report.
+    """
+    return "\x1f".join((
+        t.platform_name,
+        str(t.chat_id),
+        str(t.thread_id or ""),
+        str(t.job.get("id", "?")),
+    ))
 
 
 def _read_delivery_message_state(path: Optional[Path] = None) -> dict[str, str]:

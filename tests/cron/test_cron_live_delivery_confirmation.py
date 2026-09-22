@@ -377,24 +377,32 @@ class TestReplacePreviousDelivery:
             job, "first", _SendResult(message_id="m1"), cron_cfg=cron_cfg, adapter=adapter,
         )[0] is None
         assert sched_delivery._previous_delivery_message_id(
-            MagicMock(platform_name="telegram", chat_id=CHAT_ID, thread_id="99")) == "m1"
+            MagicMock(
+                platform_name="telegram", chat_id=CHAT_ID, thread_id="99", job=job,
+            )) == "m1"
 
         # A success ack with no delivery evidence must neither delete nor advance state.
         assert _run(job, "unverified", _SendResult(), cron_cfg=cron_cfg, adapter=adapter)[0] is None
         assert adapter.deleted == []
-        assert sched_delivery._read_delivery_message_state()["telegram\x1f-1001234567890\x1f99"] == "m1"
+        assert sched_delivery._read_delivery_message_state()[
+            "telegram\x1f-1001234567890\x1f99\x1f92e639af907f"
+        ] == "m1"
 
         assert _run(
             job, "second", _SendResult(message_id="m2"), cron_cfg=cron_cfg, adapter=adapter,
         )[0] is None
         assert adapter.deleted == [(CHAT_ID, "m1")]
-        assert sched_delivery._read_delivery_message_state()["telegram\x1f-1001234567890\x1f99"] == "m2"
+        assert sched_delivery._read_delivery_message_state()[
+            "telegram\x1f-1001234567890\x1f99\x1f92e639af907f"
+        ] == "m2"
 
     def test_standalone_advances_only_when_the_fallback_returns_a_message_id(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         adapter = self._Adapter()
         job = {**_job(), "replace_previous": True}
-        target = MagicMock(platform_name="telegram", chat_id=CHAT_ID, thread_id=None)
+        target = MagicMock(
+            platform_name="telegram", chat_id=CHAT_ID, thread_id=None, job=job,
+        )
         sched_delivery._remember_delivery_message_id(target, "old")
 
         # The live lane fails, and an evidence-free standalone success must preserve the old id.
@@ -403,7 +411,9 @@ class TestReplacePreviousDelivery:
             cron_cfg={"delivery": {"replace_previous": False}}, adapter=adapter,
         )[0] is None
         assert adapter.deleted == []
-        assert sched_delivery._read_delivery_message_state()[f"telegram\x1f{CHAT_ID}\x1f"] == "old"
+        assert sched_delivery._read_delivery_message_state()[
+            f"telegram\x1f{CHAT_ID}\x1f\x1f92e639af907f"
+        ] == "old"
 
         assert _run(
             job, "fallback", RuntimeError("live down"),
@@ -411,7 +421,36 @@ class TestReplacePreviousDelivery:
             cron_cfg={"delivery": {"replace_previous": False}}, adapter=adapter,
         )[0] is None
         assert adapter.deleted == [(CHAT_ID, "old")]
-        assert sched_delivery._read_delivery_message_state()[f"telegram\x1f{CHAT_ID}\x1f"] == "new"
+        assert sched_delivery._read_delivery_message_state()[
+            f"telegram\x1f{CHAT_ID}\x1f\x1f92e639af907f"
+        ] == "new"
+
+    def test_jobs_sharing_a_target_replace_only_their_own_report(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = self._Adapter()
+        cron_cfg = {"delivery": {"replace_previous": True}}
+        first_job = _job()
+        second_job = {**_job(), "id": "another-job"}
+
+        assert _run(
+            first_job, "first A", _SendResult(message_id="a1"),
+            cron_cfg=cron_cfg, adapter=adapter,
+        )[0] is None
+        assert _run(
+            second_job, "first B", _SendResult(message_id="b1"),
+            cron_cfg=cron_cfg, adapter=adapter,
+        )[0] is None
+        assert adapter.deleted == []
+
+        assert _run(
+            first_job, "second A", _SendResult(message_id="a2"),
+            cron_cfg=cron_cfg, adapter=adapter,
+        )[0] is None
+
+        assert adapter.deleted == [(CHAT_ID, "a1")]
+        state = sched_delivery._read_delivery_message_state()
+        assert state[f"telegram\x1f{CHAT_ID}\x1f\x1f92e639af907f"] == "a2"
+        assert state[f"telegram\x1f{CHAT_ID}\x1f\x1fanother-job"] == "b1"
 
 
 def test_scheduler_module_exposes_the_confirmation_helper():
