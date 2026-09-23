@@ -216,7 +216,11 @@ _SPECS = [
         _arg("--initial-status", choices=sorted(kb.VALID_INITIAL_STATUSES), default="running",
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
-                  "to skip the brief running-to-blocked transition."),
+                  "with --block-reason, --block-kind and --unblock-action."),
+        _arg("--block-reason", help="Concrete cause preventing work; required for --initial-status blocked."),
+        _arg("--block-kind", choices=["needs_input", "capability", "transient"],
+             help="Type of initial block; use --parent for dependency waits."),
+        _arg("--unblock-action", help="Who must do what to resume; required for --initial-status blocked."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [

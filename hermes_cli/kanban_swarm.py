@@ -74,7 +74,7 @@ def _activate_root_inline(
     summary: str,
     metadata: dict[str, Any],
 ) -> bool:
-    """Inline blocked→done CAS flip + event insert for the swarm root.
+    """Inline ready→done CAS flip + event insert for the swarm root.
 
     Runs INSIDE create_swarm's write_txn, so it must not call
     ``kb.complete_task`` (own transaction + post-commit side effects that
@@ -90,7 +90,7 @@ def _activate_root_inline(
                claim_expires= NULL,
                worker_pid   = NULL
          WHERE id = ?
-           AND status = 'blocked'
+           AND status = 'ready'
         """,
         (int(time.time()), root_id),
     )
@@ -132,7 +132,7 @@ def create_swarm(
             priority=priority, idempotency_key=idempotency_key,
         )
         root = kb.get_task(conn, created.root_id)
-        if root is not None and root.status == "blocked":
+        if root is not None and root.status == "ready":
             if not _activate_root_inline(
                 conn,
                 created.root_id,
@@ -169,7 +169,7 @@ def _create_swarm_uncommitted(
     workspace_kind: Optional[str], workspace_path: Optional[str], priority: int, idempotency_key: Optional[str],
 ) -> SwarmCreated:
     """Create the swarm graph inside the caller's transaction: planning root
-    (``blocked`` until the caller activates it), parallel workers, a verifier
+    (unpublished until the caller activates it), parallel workers, a verifier
     waiting on every worker, and a synthesizer waiting on the verifier."""
     goal = _require_text(goal, "goal")
     verifier_assignee = _require_text(verifier_assignee, "verifier_assignee")
@@ -194,7 +194,8 @@ def _create_swarm_uncommitted(
         assignee=created_by,
         priority=priority,
         idempotency_key=idempotency_key,
-        initial_status="blocked",
+        # The outer transaction hides this root until activation; no fake
+        # human block is needed to keep the dispatcher from claiming it.
         **common,
     )
 

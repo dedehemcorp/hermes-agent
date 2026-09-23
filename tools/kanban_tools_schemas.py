@@ -449,10 +449,18 @@ KANBAN_CREATE_SCHEMA = _schema(
             "description": (
                 "Initial card status. Use 'blocked' for tasks that "
                 "require immediate human ops (R3 gate) to skip the "
-                "brief running-to-blocked transition. Defaults to "
+                "brief running-to-blocked transition. Requires block_reason, "
+                "block_kind and unblock_action when blocked. Defaults to "
                 "'running', which preserves the usual dispatch path."
             ),
         },
+        "block_reason": _prop("string", "Concrete cause preventing work. Required when initial_status is blocked."),
+        "block_kind": {
+            "type": "string",
+            "enum": ["needs_input", "capability", "transient"],
+            "description": "Type of initial block. Required when blocked; use parents for dependency waits.",
+        },
+        "unblock_action": _prop("string", "Who must do what to resume. Required when initial_status is blocked."),
         "skills": {
             "type": "array",
             "items": {"type": "string"},

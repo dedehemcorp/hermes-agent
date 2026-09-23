@@ -45,6 +45,28 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 The eight canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below.
 
+### Creating an initially blocked task
+
+`initial_status="blocked"` requires three explicit fields on `kanban_create`, the
+dashboard creation API and `kanban_db.create_task`: `block_reason` (the concrete
+obstacle), `block_kind` (`needs_input`, `capability` or `transient`), and
+`unblock_action` (who must do what before the card can resume). The CLI equivalents
+are `--initial-status blocked --block-reason "…" --block-kind needs_input
+--unblock-action "…"`. Missing, blank or wrongly typed evidence is rejected before
+any task/event is written. These fields are only valid for blocked creation, which
+cannot be combined with `triage`.
+
+The typed block and its cause/recovery action are recorded atomically in the
+existing task and `blocked` event; `show` exposes the audit trail. A valid initial
+block stays blocked until explicitly unblocked. Use `parents`/`--parent` for a
+dependency wait, not an initial human block. Automatic `gave_up` failure blocks and
+existing cards are unchanged. This checks the declaration, not whether its factual
+claim is true; callers must still provide a genuine obstacle, not a parking excuse.
+
+Long-running processes retain imported code and tool schemas. Installing this
+change on disk does not prove an existing gateway uses it: verify loading in a
+fresh runtime and defer gateway activation to an approved idle maintenance window.
+
 ## PR completion contracts
 
 Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact

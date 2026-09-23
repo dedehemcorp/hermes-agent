@@ -399,6 +399,10 @@ class CreateTaskBody(BaseModel):
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
+    initial_status: str = "running"
+    block_reason: Optional[str] = None
+    block_kind: Optional[str] = None
+    unblock_action: Optional[str] = None
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None

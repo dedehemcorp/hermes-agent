@@ -22,6 +22,30 @@ def inherit_creator_origin(
     _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
 
 
+def validate_initial_block(
+    initial_status: str, triage: bool, block_reason: Optional[str],
+    block_kind: Optional[str], unblock_action: Optional[str],
+) -> Optional[dict[str, str]]:
+    """Require an actionable declaration, not proof of the caller's factual claim.
+
+    Dependency waits belong to parent edges, not the sticky human-block lane.
+    Automatic failure blocks do not go through task creation.
+    """
+    if initial_status != "blocked":
+        if any(value is not None for value in (block_reason, block_kind, unblock_action)):
+            raise ValueError("block_reason, block_kind and unblock_action require initial_status='blocked'")
+        return None
+    if triage:
+        raise ValueError("initial_status='blocked' cannot be combined with triage")
+    for name, value in (("block_reason", block_reason), ("unblock_action", unblock_action)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be non-empty text for initial_status='blocked'")
+    if block_kind not in ("needs_input", "capability", "transient"):
+        raise ValueError("block_kind must be needs_input, capability or transient; use parents for dependency waits")
+    return {"reason": block_reason.strip(), "kind": block_kind,
+            "unblock_action": unblock_action.strip()}
+
+
 def initial_task_state(
     conn: sqlite3.Connection, parents: tuple[str, ...], initial_status: str,
     triage: bool, tenant: Optional[str],

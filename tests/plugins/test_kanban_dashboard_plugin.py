@@ -88,6 +88,26 @@ def test_board_empty(client):
 # ---------------------------------------------------------------------------
 
 
+def test_create_blocked_task_requires_actionable_evidence(client):
+    fields = {"title": "Release approval", "initial_status": "blocked"}
+    rejected = client.post("/api/plugins/kanban/tasks", json=fields)
+    assert rejected.status_code == 400
+    assert "block_reason" in rejected.json()["detail"]
+    with kbc.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    fields.update(block_reason="Owner approval is missing", block_kind="needs_input",
+                  unblock_action="Owner approves release and unblocks this card")
+    created = client.post("/api/plugins/kanban/tasks", json=fields)
+    assert created.status_code == 200, created.text
+    task = created.json()["task"]
+    assert task["status"] == "blocked"
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task["id"]).block_kind == "needs_input"
+        event = next(e for e in kb.list_events(conn, task["id"]) if e.kind == "blocked")
+        assert event.payload["reason"] == fields["block_reason"]
+        assert event.payload["unblock_action"] == fields["unblock_action"]
+
+
 def test_create_task_appears_on_board(client):
     r = client.post(
         "/api/plugins/kanban/tasks",

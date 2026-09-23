@@ -1260,11 +1260,14 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    block_reason: Optional[str] = None, block_kind: Optional[str] = None,
+    unblock_action: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
-    forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
+    forces ``triage``; ``initial_status="blocked"`` requires ``block_reason``,
+    ``block_kind`` and ``unblock_action`` to park it for actionable human ops.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
@@ -1276,7 +1279,7 @@ def create_task(
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin, validate_initial_block
     from hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
@@ -1287,6 +1290,7 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    initial_block = validate_initial_block(initial_status, triage, block_reason, block_kind, unblock_action)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1395,11 +1399,16 @@ def create_task(
                     },
                 )
                 if task_status == "blocked":
+                    conn.execute(
+                        "UPDATE tasks SET block_kind = ?, block_recurrences = 1 WHERE id = ?",
+                        (initial_block["kind"], task_id),
+                    )
                     _append_event(
                         conn,
                         task_id,
                         "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                        {**initial_block, "status": "blocked", "actor": created_by or "user",
+                         "source": "initial_status", "recurrences": 1},
                     )
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
