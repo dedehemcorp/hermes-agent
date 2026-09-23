@@ -1729,6 +1729,28 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+
+RECURRING_LLM_GATE_ERROR = (
+    "Recurring LLM cron jobs must be gated to control token cost: attach a `script` that prints "
+    '{"wakeAgent": false} when there is nothing new, or a `monitor_script`/`monitor_url`, or use '
+    "`no_agent` for pure scripts. Set cron.require_gate_for_recurring_llm: false to disable this rule."
+)
+
+
+def _require_gate_for_recurring_llm(parsed_schedule: Dict[str, Any], fields: Dict[str, Any]) -> None:
+    """Refuse an ungated recurring LLM job when ``cron.require_gate_for_recurring_llm`` is on."""
+    if parsed_schedule.get("kind") not in {"cron", "interval"}:
+        return
+    if fields.get("no_agent") or fields.get("script") or fields.get("monitor_script") or fields.get("monitor_url"):
+        return
+    try:
+        from hermes_cli.config import load_config
+        enabled = bool(((load_config() or {}).get("cron") or {}).get("require_gate_for_recurring_llm", False))
+    except Exception:
+        enabled = False
+    if enabled:
+        raise ValueError(RECURRING_LLM_GATE_ERROR)
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1794,6 +1816,7 @@ def create_job(
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, f["script"])
+    _require_gate_for_recurring_llm(parsed_schedule, f)
 
     label_source = (
         prompt_text
