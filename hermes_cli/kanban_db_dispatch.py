@@ -1897,6 +1897,45 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     return total
 
 
+# Estimated resident size of one new worker (agent process plus its tools).
+MEMORY_CEILING_MB_PER_WORKER = 768
+
+
+def configured_max_memory_percent() -> Optional[float]:
+    """``kanban.max_memory_percent`` read live each tick; None when unset/invalid.
+
+    When set, the host's used-memory ratio replaces a fixed task count as the
+    concurrency limit: new workers spawn only while the projected usage stays
+    below this percentage.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("max_memory_percent")
+        value = float(raw) if raw is not None else None
+    except Exception:
+        return None
+    return value if value is not None and 0 < value < 100 else None
+
+
+def memory_ceiling_budget(
+    percent: Optional[float], sample: Optional[Mapping[str, Any]] = None,
+) -> Optional[int]:
+    """New workers that fit under ``percent`` of MemTotal; None = no ceiling/unknown."""
+    if percent is None:
+        return None
+    if sample is None:
+        sample = _system_memory_sample()
+    try:
+        total = int(sample["mem_total_kib"])
+        available = int(sample["mem_available_kib"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    headroom_kib = total * percent / 100 - (total - available)
+    return max(0, int(headroom_kib // (MEMORY_CEILING_MB_PER_WORKER * 1024)))
+
+
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 
@@ -2174,6 +2213,10 @@ def _tick_spawn_budget(
     every other board count against the same budget, else N boards multiply the
     cap by N — exactly the fan-out the memory-derived default exists to prevent.
     """
+    # A memory ceiling replaces the fixed host cap (and its derived default).
+    memory_percent = configured_max_memory_percent()
+    if memory_percent is not None:
+        max_in_progress = None
     # Count already-running tasks so max_spawn enforces concurrency, not a
     # per-tick budget: "running" tasks stay running until the worker makes a terminal
     # board call (kanban_complete/kanban_block/kanban_request_review) or the TTL reclaims them.
@@ -2200,6 +2243,14 @@ def _tick_spawn_budget(
     # critical -> spawn nothing this tick; elevated -> at most one new worker.
     # Reclaim/promotion already ran, so bookkeeping stays live; deferred tasks
     # wait for a later tick. "unknown" imposes no restriction.
+    ceiling = memory_ceiling_budget(memory_percent)
+    if ceiling is not None:
+        if ceiling <= 0:
+            _kb._log.info("kanban dispatch: memory ceiling reached; no new worker this tick")
+            return False, None
+        if spawn_budget is None or spawn_budget > ceiling:
+            spawn_budget = ceiling
+
     pressure = _memory_pressure_level()
     if pressure == "critical":
         result.memory_pressure = pressure

@@ -238,3 +238,54 @@ def test_dispatch_critical_pressure_still_runs_reclaim_bookkeeping(
     assert res.memory_pressure == "critical"
     assert row is not None
     assert row.status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# kanban.max_memory_percent ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_memory_ceiling_budget_counts_workers_that_fit():
+    total = 16 * GIB
+    sample = {"mem_total_kib": total, "mem_available_kib": 12 * GIB}  # 25 % used
+    # 80 % of 16 GiB = 12.8 GiB; 4 GiB used -> 8.8 GiB headroom -> 11 workers of 768 MiB.
+    assert kbd.memory_ceiling_budget(80, sample) == 11
+    busy = {"mem_total_kib": total, "mem_available_kib": 3 * GIB}  # 81 % used
+    assert kbd.memory_ceiling_budget(80, busy) == 0
+    assert kbd.memory_ceiling_budget(None, sample) is None
+    assert kbd.memory_ceiling_budget(80, {}) is None
+
+
+def test_dispatch_respects_memory_ceiling(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kbd, "configured_max_memory_percent", lambda: 80.0)
+    # 16 GiB host, 11.9 GiB used: 0.9 GiB headroom under 80 % -> one worker.
+    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {
+        "mem_total_kib": 16 * GIB, "mem_available_kib": int(4.1 * GIB)})
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        for title, who in (("a", "alice"), ("b", "bob"), ("c", "carol")):
+            kb.create_task(conn, title=title, assignee=who)
+        kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+    assert len(spawns) == 1
+
+
+def test_memory_ceiling_replaces_fixed_host_cap(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kbd, "configured_max_memory_percent", lambda: 80.0)
+    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {
+        "mem_total_kib": 16 * GIB, "mem_available_kib": 12 * GIB})
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        for index in range(6):
+            kb.create_task(conn, title=f"t{index}", assignee=f"p{index}")
+        kbd.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=4)
+    assert len(spawns) == 6
