@@ -1117,6 +1117,19 @@ _FALLBACK_TURN_MAX_CHARS = 700
 _AUTO_FOCUS_MAX_TURNS = 3
 _AUTO_FOCUS_TURN_MAX_CHARS = 260
 _AUTO_FOCUS_MAX_CHARS = 700
+_STANDING_GUIDANCE_MAX_CHARS = 1200
+
+
+def _standing_summary_guidance() -> str:
+    """Operator-configured priorities (``compression.summary_guidance``) applied to every compaction."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import load_config
+        raw = load_config()
+        cfg = raw.get("compression", {}) if isinstance(raw, dict) else {}
+        value = cfg.get("summary_guidance") if isinstance(cfg, dict) else None
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:_STANDING_GUIDANCE_MAX_CHARS]
+    return ""
 _ACTIVE_TASK_MAX_CHARS = 1400
 # Hard floor of verbatim recent messages when the budget is exhausted; using the
 # full protect_last_n would recreate the nothing-compactable large-tool-output case.
@@ -3910,6 +3923,12 @@ Use this exact structure:
 
 {_template_sections}"""
 
+        _standing = _standing_summary_guidance()
+        if _standing:
+            prompt += f"""
+
+STANDING PRIORITIES (operator configuration, apply on every compaction):
+{_redact_compaction_text(_standing)}"""
         # Focus guidance goes last so it takes precedence.
         if focus_topic:
             prompt += f"""
